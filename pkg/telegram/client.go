@@ -321,16 +321,46 @@ func (c *Client) ensureStorageChannel(ctx context.Context) error {
 		return nil
 	}
 
-	// Look up channel if ID is already saved
-	if c.cfg.ChannelID != 0 {
+	// 1. If channel ID and access hash are both present in config
+	if c.cfg.ChannelID != 0 && c.cfg.ChannelAccessHash != 0 {
 		c.channel = &tg.InputPeerChannel{
 			ChannelID:  c.cfg.ChannelID,
-			AccessHash: 0, // GotD updates access hash automatically
+			AccessHash: c.cfg.ChannelAccessHash,
 		}
 		return nil
 	}
 
-	// Create or find channel named "TG_Drive_Storage"
+	// 2. Fetch dialogs to find channel and retrieve accurate AccessHash
+	dialogs, err := c.rawAPI.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      100,
+	})
+	if err == nil {
+		var chats []tg.ChatClass
+		switch d := dialogs.(type) {
+		case *tg.MessagesDialogs:
+			chats = d.Chats
+		case *tg.MessagesDialogsSlice:
+			chats = d.Chats
+		}
+		for _, chat := range chats {
+			if ch, ok := chat.(*tg.Channel); ok {
+				if (c.cfg.ChannelID != 0 && ch.ID == c.cfg.ChannelID) || ch.Title == "TG_Drive_Storage" {
+					c.cfg.ChannelID = ch.ID
+					c.cfg.ChannelAccessHash = ch.AccessHash
+					c.cfg.ChannelTitle = ch.Title
+					_ = config.Save(c.cfg)
+					c.channel = &tg.InputPeerChannel{
+						ChannelID:  ch.ID,
+						AccessHash: ch.AccessHash,
+					}
+					return nil
+				}
+			}
+		}
+	}
+
+	// 3. If not found, create new channel named "TG_Drive_Storage"
 	title := "TG_Drive_Storage"
 	created, err := c.rawAPI.ChannelsCreateChannel(ctx, &tg.ChannelsCreateChannelRequest{
 		Broadcast: true,
@@ -359,6 +389,7 @@ func (c *Client) ensureStorageChannel(ctx context.Context) error {
 
 	if channelID != 0 {
 		c.cfg.ChannelID = channelID
+		c.cfg.ChannelAccessHash = accessHash
 		c.cfg.ChannelTitle = title
 		_ = config.Save(c.cfg)
 		c.channel = &tg.InputPeerChannel{

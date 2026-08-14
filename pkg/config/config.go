@@ -20,9 +20,10 @@ type Config struct {
 	ApiID        int           `json:"api_id"`
 	ApiHash      string        `json:"api_hash"`
 	PhoneNumber  string        `json:"phone_number,omitempty"`
-	StorageType  string        `json:"storage_type"` // "channel" or "saved_messages"
-	ChannelID    int64         `json:"channel_id,omitempty"`
-	ChannelTitle string        `json:"channel_title,omitempty"`
+	StorageType       string        `json:"storage_type"` // "channel" or "saved_messages"
+	ChannelID         int64         `json:"channel_id,omitempty"`
+	ChannelAccessHash int64         `json:"channel_access_hash,omitempty"`
+	ChannelTitle      string        `json:"channel_title,omitempty"`
 	
 	// WebDAV & Mount
 	WebDAVHost   string `json:"webdav_host"`
