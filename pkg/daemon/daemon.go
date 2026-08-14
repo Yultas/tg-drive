@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"tg-drive/pkg/config"
 	"tg-drive/pkg/syncer"
@@ -60,6 +61,14 @@ func NewProgram() (*Program, error) {
 
 func (p *Program) Start(s service.Service) error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+
+	// Create daemon log file
+	logPath := filepath.Join(config.GetDefaultConfigDir(), "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		os.Stdout = logFile
+		os.Stderr = logFile
+	}
 
 	go p.run()
 	return nil

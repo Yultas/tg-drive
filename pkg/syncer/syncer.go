@@ -228,6 +228,18 @@ func (s *Syncer) workerLoop() {
 func (s *Syncer) processUpload(task SyncTask) {
 	fmt.Printf("⬆️ Начало синхронизации: %s (%s)\n", filepath.Base(task.LocalPath), formatBytes(task.Size))
 
+	// 1. Immediately register node in DB as uploading
+	node := &vfs.Node{
+		Name:     filepath.Base(task.RemotePath),
+		Path:     task.RemotePath,
+		IsDir:    false,
+		Size:     task.Size,
+		ModTime:  task.ModTime,
+		MimeType: "application/octet-stream",
+		Status:   "uploading",
+	}
+	_ = s.db.SaveFileNode(node)
+
 	progress := func(uploaded, total int64, speed float64) {
 		pct := float64(uploaded) / float64(total) * 100
 		speedMB := speed / (1024 * 1024)
@@ -238,26 +250,22 @@ func (s *Syncer) processUpload(task SyncTask) {
 	fmt.Println()
 	if err != nil {
 		fmt.Printf("❌ Ошибка синхронизации %s: %v\n", task.LocalPath, err)
+		node.Status = "error"
+		_ = s.db.SaveFileNode(node)
 		return
 	}
 
-	node := &vfs.Node{
-		Name:            filepath.Base(task.RemotePath),
-		Path:            task.RemotePath,
-		IsDir:           false,
-		Size:            res.Size,
-		ModTime:         task.ModTime,
-		MimeType:        res.MimeType,
-		TGMessageID:     res.MessageID,
-		TGChannelID:     res.ChannelID,
-		TGFileID:        res.FileID,
-		TGAccessHash:    res.AccessHash,
-		TGFileReference: res.FileReference,
-		Status:          "synced",
-	}
+	node.Size = res.Size
+	node.MimeType = res.MimeType
+	node.TGMessageID = res.MessageID
+	node.TGChannelID = res.ChannelID
+	node.TGFileID = res.FileID
+	node.TGAccessHash = res.AccessHash
+	node.TGFileReference = res.FileReference
+	node.Status = "synced"
 	_ = s.db.SaveFileNode(node)
 
-	fmt.Printf("✅ Файл успешно синхронизирован в Telegram: %s\n", task.RemotePath)
+	fmt.Printf("✅ Файл успешно синхронизирован в Telegram: %s (msg: #%d)\n", task.RemotePath, res.MessageID)
 }
 
 func isIgnoredFile(name string) bool {
