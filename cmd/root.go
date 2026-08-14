@@ -24,10 +24,16 @@ func Execute() {
 	}
 }
 
+var cfgDir string
+
 func init() {
+	rootCmd.PersistentFlags().StringVar(&cfgDir, "config-dir", "", "Кастомная директория конфигурации")
 	cobra.OnInitialize(initConfig)
 }
 
 func initConfig() {
+	if cfgDir != "" {
+		config.SetConfigDir(cfgDir)
+	}
 	_, _ = config.Load()
 }

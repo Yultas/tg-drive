@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"tg-drive/pkg/config"
 	"tg-drive/pkg/syncer"
@@ -69,7 +70,7 @@ func (p *Program) run() {
 
 	// 1. Подключение к Telegram
 	if err := p.tgClient.Start(p.ctx); err != nil {
-		fmt.Printf("❌ Ошибка авторизации в Telegram: %v\n", err)
+		fmt.Printf("❌ Ошибка подключения к Telegram: %v\n", err)
 		return
 	}
 
@@ -110,15 +111,16 @@ func (p *Program) Stop(s service.Service) error {
 }
 
 func GetServiceConfig() *service.Config {
+	configDir := config.GetDefaultConfigDir()
 	return &service.Config{
 		Name:        "TGDriveService",
 		DisplayName: "Telegram Drive Storage Service",
 		Description: "Фоновая служба виртуального облачного диска Telegram с автосинхронизацией",
-		Arguments:   []string{"run"},
+		Arguments:   []string{"run", "--config-dir", configDir},
 	}
 }
 
-func Control(action string) error {
+func Run() error {
 	prog, err := NewProgram()
 	if err != nil {
 		return err
@@ -130,8 +132,26 @@ func Control(action string) error {
 		return err
 	}
 
-	if action == "run" {
-		return s.Run()
+	return s.Run()
+}
+
+func Control(action string) error {
+	sessionPath := config.GetSessionPath()
+	if action == "start" || action == "install" {
+		if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
+			return fmt.Errorf("сессия Telegram не найдена!\nСначала выполните авторизацию в терминале:\n  .\\tg-drive.exe auth\nА затем запустите службу.")
+		}
+	}
+
+	prog, err := NewProgram()
+	if err != nil {
+		return err
+	}
+
+	svcConfig := GetServiceConfig()
+	s, err := service.New(prog, svcConfig)
+	if err != nil {
+		return err
 	}
 
 	err = service.Control(s, action)
@@ -139,6 +159,6 @@ func Control(action string) error {
 		return fmt.Errorf("ошибка выполнения команды службы %s: %w", action, err)
 	}
 
-	fmt.Printf("Успешно выполнена команда службы: %s\n", action)
+	fmt.Printf("✅ Успешно выполнена команда службы: %s\n", action)
 	return nil
 }

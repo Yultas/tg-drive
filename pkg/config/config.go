@@ -43,11 +43,21 @@ type Config struct {
 }
 
 var (
-	cfgInstance *Config
-	cfgMu       sync.RWMutex
+	cfgInstance     *Config
+	cfgMu           sync.RWMutex
+	customConfigDir string
 )
 
+func SetConfigDir(dir string) {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	customConfigDir = dir
+}
+
 func GetDefaultConfigDir() string {
+	if customConfigDir != "" {
+		return customConfigDir
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
