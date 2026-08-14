@@ -1,0 +1,23 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+tg-drive
+
+# User configs and local data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+session.json
+config.json
+temp_cache/
+.tgdrive/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
