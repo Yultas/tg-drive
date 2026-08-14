@@ -45,8 +45,13 @@ func (m *Mounter) Unmount() error {
 func (m *Mounter) mountWindows() error {
 	drive := strings.TrimSuffix(m.driveLetter, ":") + ":"
 	
-	// Ensure Windows WebClient allows file transfers up to 4GB (default is only 50MB)
-	_ = exec.Command("reg", "add", `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`, "/v", "FileSizeLimitInBytes", "/t", "REG_DWORD", "/d", "4294967295", "/f").Run()
+	// Ensure Windows WebClient allows file transfers up to 4GB and disables timeouts
+	regPath := `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`
+	_ = exec.Command("reg", "add", regPath, "/v", "FileSizeLimitInBytes", "/t", "REG_DWORD", "/d", "4294967295", "/f").Run()
+	_ = exec.Command("reg", "add", regPath, "/v", "SendReceiveTimeoutInSec", "/t", "REG_DWORD", "/d", "4294967295", "/f").Run()
+	_ = exec.Command("reg", "add", regPath, "/v", "LocalServerTimeoutInSec", "/t", "REG_DWORD", "/d", "4294967295", "/f").Run()
+	_ = exec.Command("reg", "add", regPath, "/v", "InternetServerTimeoutInSec", "/t", "REG_DWORD", "/d", "4294967295", "/f").Run()
+	_ = exec.Command("reg", "add", regPath, "/v", "FileAttributesLimitInBytes", "/t", "REG_DWORD", "/d", "100000000", "/f").Run()
 
 	// Unmount any stale drive first
 	_ = exec.Command("net", "use", drive, "/delete", "/y").Run()
