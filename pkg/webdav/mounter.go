@@ -45,6 +45,9 @@ func (m *Mounter) Unmount() error {
 func (m *Mounter) mountWindows() error {
 	drive := strings.TrimSuffix(m.driveLetter, ":") + ":"
 	
+	// Ensure Windows WebClient allows file transfers up to 4GB (default is only 50MB)
+	_ = exec.Command("reg", "add", `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`, "/v", "FileSizeLimitInBytes", "/t", "REG_DWORD", "/d", "4294967295", "/f").Run()
+
 	// Unmount any stale drive first
 	_ = exec.Command("net", "use", drive, "/delete", "/y").Run()
 
