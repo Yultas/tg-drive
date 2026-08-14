@@ -4,10 +4,15 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +24,12 @@ import (
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -97,6 +104,106 @@ func (a *TerminalAuth) AcceptTermsOfService(ctx context.Context, tos tg.HelpTerm
 	return nil
 }
 
+func createResolver(proxyStr string) (dcs.Resolver, error) {
+	if strings.TrimSpace(proxyStr) == "" {
+		return nil, nil
+	}
+
+	u, err := url.Parse(proxyStr)
+	if err != nil {
+		return nil, fmt.Errorf("неверный формат proxy URL: %w", err)
+	}
+
+	switch strings.ToLower(u.Scheme) {
+	case "socks5", "socks5h":
+		var auth *proxy.Auth
+		if u.User != nil {
+			auth = &proxy.Auth{
+				User: u.User.Username(),
+			}
+			if p, ok := u.User.Password(); ok {
+				auth.Password = p
+			}
+		}
+		dialer, err := proxy.SOCKS5("tcp", u.Host, auth, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка создания SOCKS5 dialer: %w", err)
+		}
+
+		return dcs.Plain(dcs.PlainOptions{
+			Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if ctxDialer, ok := dialer.(proxy.ContextDialer); ok {
+					return ctxDialer.DialContext(ctx, network, addr)
+				}
+				return dialer.Dial(network, addr)
+			},
+		}), nil
+
+	case "http", "https":
+		return dcs.Plain(dcs.PlainOptions{
+			Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				var d net.Dialer
+				conn, err := d.DialContext(ctx, "tcp", u.Host)
+				if err != nil {
+					return nil, err
+				}
+
+				req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", addr, addr)
+				if u.User != nil {
+					userPass := u.User.String()
+					authHeader := base64.StdEncoding.EncodeToString([]byte(userPass))
+					req += fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", authHeader)
+				}
+				req += "\r\n"
+
+				if _, err := conn.Write([]byte(req)); err != nil {
+					_ = conn.Close()
+					return nil, err
+				}
+
+				respReader := bufio.NewReader(conn)
+				resp, err := http.ReadResponse(respReader, nil)
+				if err != nil {
+					_ = conn.Close()
+					return nil, err
+				}
+				if resp.StatusCode != 200 {
+					_ = conn.Close()
+					return nil, fmt.Errorf("HTTP proxy вернул ошибку: %s", resp.Status)
+				}
+
+				return conn, nil
+			},
+		}), nil
+
+	case "tg", "mtproto":
+		var host string
+		var secretHex string
+		if u.Scheme == "tg" {
+			q := u.Query()
+			server := q.Get("server")
+			port := q.Get("port")
+			secretHex = q.Get("secret")
+			host = net.JoinHostPort(server, port)
+		} else {
+			host = u.Host
+			if u.User != nil {
+				secretHex = u.User.Username()
+			}
+		}
+
+		secretBytes, err := hex.DecodeString(secretHex)
+		if err != nil {
+			return nil, fmt.Errorf("неверный MTProto secret hex: %w", err)
+		}
+
+		return dcs.MTProxy(host, secretBytes, dcs.MTProxyOptions{})
+
+	default:
+		return nil, fmt.Errorf("неподдерживаемый протокол прокси: %s", u.Scheme)
+	}
+}
+
 func NewClient(cfg *config.Config) *Client {
 	appID := cfg.ApiID
 	appHash := cfg.ApiHash
@@ -109,9 +216,21 @@ func NewClient(cfg *config.Config) *Client {
 		Path: config.GetSessionPath(),
 	}
 
-	client := telegram.NewClient(appID, appHash, telegram.Options{
+	opts := telegram.Options{
 		SessionStorage: sessionStorage,
-	})
+	}
+
+	if cfg.ProxyURL != "" {
+		resolver, err := createResolver(cfg.ProxyURL)
+		if err != nil {
+			fmt.Printf("⚠️ Ошибка настройки прокси (%s): %v\n", cfg.ProxyURL, err)
+		} else if resolver != nil {
+			opts.Resolver = resolver
+			fmt.Printf("🛡️ Прокси активирован: %s\n", cfg.ProxyURL)
+		}
+	}
+
+	client := telegram.NewClient(appID, appHash, opts)
 
 	return &Client{
 		cfg:    cfg,

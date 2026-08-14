@@ -24,10 +24,14 @@ func Execute() {
 	}
 }
 
-var cfgDir string
+var (
+	cfgDir    string
+	proxyFlag string
+)
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgDir, "config-dir", "", "Кастомная директория конфигурации")
+	rootCmd.PersistentFlags().StringVar(&proxyFlag, "proxy", "", "Адрес прокси (socks5://..., http://..., tg://...)")
 	cobra.OnInitialize(initConfig)
 }
 
@@ -35,5 +39,8 @@ func initConfig() {
 	if cfgDir != "" {
 		config.SetConfigDir(cfgDir)
 	}
-	_, _ = config.Load()
+	cfg, err := config.Load()
+	if err == nil && proxyFlag != "" {
+		cfg.ProxyURL = proxyFlag
+	}
 }

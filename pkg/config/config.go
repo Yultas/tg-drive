@@ -38,6 +38,9 @@ type Config struct {
 	// Web UI
 	EnableWebUI bool `json:"enable_web_ui"`
 	
+	// Proxy (SOCKS5, HTTP, MTProto)
+	ProxyURL string `json:"proxy_url,omitempty"`
+	
 	// Folder Sync
 	SyncList []SyncMapping `json:"sync_list"`
 }

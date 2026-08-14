@@ -65,6 +65,11 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("📄 Всего файлов:   %d\n", totalFiles)
 		fmt.Printf("📦 Общий объем:    %s\n", formatBytes(totalSize))
 		fmt.Printf("🔄 Папок на синхро: %d\n", len(cfg.SyncList))
+		if cfg.ProxyURL != "" {
+			fmt.Printf("🛡️ Прокси:         %s\n", cfg.ProxyURL)
+		} else {
+			fmt.Printf("🛡️ Прокси:         Прямое подключение (без прокси)\n")
+		}
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 		return nil
