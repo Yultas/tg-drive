@@ -17,11 +17,12 @@ import (
 )
 
 type VFS struct {
-	db       *DB
-	tgClient *telegram.Client
-	cfg      *config.Config
-	tempDir  string
-	mu       sync.RWMutex
+	db          *DB
+	tgClient    *telegram.Client
+	cfg         *config.Config
+	tempDir     string
+	activeFiles map[string]string // virtualPath -> localTempPath
+	mu          sync.RWMutex
 }
 
 func NewVFS(db *DB, tgClient *telegram.Client, cfg *config.Config) (*VFS, error) {
@@ -31,10 +32,11 @@ func NewVFS(db *DB, tgClient *telegram.Client, cfg *config.Config) (*VFS, error)
 	}
 
 	return &VFS{
-		db:       db,
-		tgClient: tgClient,
-		cfg:      cfg,
-		tempDir:  tempDir,
+		db:          db,
+		tgClient:    tgClient,
+		cfg:         cfg,
+		tempDir:     tempDir,
+		activeFiles: make(map[string]string),
 	}, nil
 }
 
@@ -48,7 +50,7 @@ func (v *VFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileM
 
 	node, err := v.db.GetNodeByPath(cleanName)
 	if err == nil && node.IsDir {
-		// Directory
+		// Directory listing
 		children, err := v.db.ListChildren(node.ID)
 		if err != nil {
 			return nil, err
@@ -64,7 +66,7 @@ func (v *VFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileM
 	}
 
 	// Creating or Writing file
-	isWrite := (flag&os.O_WRONLY != 0) || (flag&os.O_RDWR != 0) || (flag&os.O_CREATE != 0)
+	isWrite := (flag&os.O_WRONLY != 0) || (flag&os.O_RDWR != 0) || (flag&os.O_CREATE != 0) || (flag&os.O_TRUNC != 0)
 
 	if isWrite {
 		tempFilePath := filepath.Join(v.tempDir, fmt.Sprintf("upload_%d_%s", time.Now().UnixNano(), path.Base(cleanName)))
@@ -72,6 +74,10 @@ func (v *VFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileM
 		if err != nil {
 			return nil, err
 		}
+
+		v.mu.Lock()
+		v.activeFiles[cleanName] = tempFilePath
+		v.mu.Unlock()
 
 		return &WriteFile{
 			vfs:          v,
@@ -83,6 +89,21 @@ func (v *VFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileM
 	}
 
 	// Reading an existing file
+	v.mu.RLock()
+	activeTempPath, hasActive := v.activeFiles[cleanName]
+	v.mu.RUnlock()
+
+	if hasActive {
+		// File is currently being uploaded or locally cached, serve from local file
+		f, err := os.Open(activeTempPath)
+		if err == nil {
+			return &LocalReadFile{
+				file:        f,
+				virtualPath: cleanName,
+			}, nil
+		}
+	}
+
 	if err != nil {
 		return nil, os.ErrNotExist
 	}
@@ -95,16 +116,45 @@ func (v *VFS) OpenFile(ctx context.Context, name string, flag int, perm os.FileM
 }
 
 func (v *VFS) RemoveAll(ctx context.Context, name string) error {
+	v.mu.Lock()
+	delete(v.activeFiles, CleanPath(name))
+	v.mu.Unlock()
 	return v.db.DeleteNode(name)
 }
 
 func (v *VFS) Rename(ctx context.Context, oldName, newName string) error {
+	v.mu.Lock()
+	cleanOld := CleanPath(oldName)
+	cleanNew := CleanPath(newName)
+	if tempPath, ok := v.activeFiles[cleanOld]; ok {
+		delete(v.activeFiles, cleanOld)
+		v.activeFiles[cleanNew] = tempPath
+	}
+	v.mu.Unlock()
 	return v.db.RenameNode(oldName, newName)
 }
 
 func (v *VFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
-	node, err := v.db.GetNodeByPath(name)
+	cleanName := CleanPath(name)
+	node, err := v.db.GetNodeByPath(cleanName)
 	if err != nil {
+		// Check active files
+		v.mu.RLock()
+		activeTempPath, hasActive := v.activeFiles[cleanName]
+		v.mu.RUnlock()
+		if hasActive {
+			if st, err := os.Stat(activeTempPath); err == nil {
+				return &FileInfo{
+					node: &Node{
+						Name:    path.Base(cleanName),
+						Path:    cleanName,
+						IsDir:   false,
+						Size:    st.Size(),
+						ModTime: st.ModTime(),
+					},
+				}, nil
+			}
+		}
 		return nil, os.ErrNotExist
 	}
 	return &FileInfo{node: node}, nil
@@ -117,7 +167,7 @@ type FileInfo struct {
 
 func (fi *FileInfo) Name() string       { return fi.node.Name }
 func (fi *FileInfo) Size() int64        { return fi.node.Size }
-func (fi *FileInfo) Mode() os.FileMode  {
+func (fi *FileInfo) Mode() os.FileMode {
 	if fi.node.IsDir {
 		return os.ModeDir | 0755
 	}
@@ -217,41 +267,107 @@ func (w *WriteFile) Close() error {
 	_ = w.localFile.Close()
 
 	stat, err := os.Stat(w.tempFilePath)
-	if err != nil || stat.Size() == 0 {
+	if err != nil {
+		w.vfs.mu.Lock()
+		delete(w.vfs.activeFiles, w.virtualPath)
+		w.vfs.mu.Unlock()
+		return nil
+	}
+
+	fileSize := stat.Size()
+	now := time.Now()
+
+	// 1. Immediately register file in SQLite so Windows Explorer Stat / PROPFIND succeeds immediately
+	node := &Node{
+		Name:     filepath.Base(w.virtualPath),
+		Path:     w.virtualPath,
+		IsDir:    false,
+		Size:     fileSize,
+		ModTime:  now,
+		MimeType: "application/octet-stream",
+		Status:   "uploading",
+	}
+	_ = w.vfs.db.SaveFileNode(node)
+
+	// If 0-byte file (placeholder), keep in DB and clean temp file
+	if fileSize == 0 {
+		w.vfs.mu.Lock()
+		delete(w.vfs.activeFiles, w.virtualPath)
+		w.vfs.mu.Unlock()
 		_ = os.Remove(w.tempFilePath)
 		return nil
 	}
 
-	// Asynchronously upload to Telegram or upload directly
-	go func() {
-		defer os.Remove(w.tempFilePath)
+	// 2. Asynchronously upload to Telegram in background
+	go func(targetNode *Node, tempPath string, vPath string) {
+		defer func() {
+			w.vfs.mu.Lock()
+			delete(w.vfs.activeFiles, vPath)
+			w.vfs.mu.Unlock()
+			_ = os.Remove(tempPath)
+		}()
 
-		res, err := w.vfs.tgClient.UploadFile(context.Background(), w.tempFilePath, nil)
+		fmt.Printf("⬆️ Загрузка файла в Telegram: %s (%s)...\n", vPath, formatBytes(targetNode.Size))
+
+		res, err := w.vfs.tgClient.UploadFile(context.Background(), tempPath, nil)
 		if err != nil {
-			fmt.Printf("❌ Failed to upload %s to Telegram: %v\n", w.virtualPath, err)
+			fmt.Printf("❌ Ошибка загрузки %s в Telegram: %v\n", vPath, err)
+			targetNode.Status = "error"
+			_ = w.vfs.db.SaveFileNode(targetNode)
 			return
 		}
 
-		node := &Node{
-			Name:            filepath.Base(w.virtualPath),
-			Path:            w.virtualPath,
-			IsDir:           false,
-			Size:            res.Size,
-			ModTime:         time.Now(),
-			MimeType:        res.MimeType,
-			TGMessageID:     res.MessageID,
-			TGChannelID:     res.ChannelID,
-			TGFileID:        res.FileID,
-			TGAccessHash:    res.AccessHash,
-			TGFileReference: res.FileReference,
-			Status:          "synced",
-		}
-		_ = w.vfs.db.SaveFileNode(node)
-		fmt.Printf("✅ Uploaded %s to Telegram (%d bytes)\n", w.virtualPath, res.Size)
-	}()
+		targetNode.Size = res.Size
+		targetNode.MimeType = res.MimeType
+		targetNode.TGMessageID = res.MessageID
+		targetNode.TGChannelID = res.ChannelID
+		targetNode.TGFileID = res.FileID
+		targetNode.TGAccessHash = res.AccessHash
+		targetNode.TGFileReference = res.FileReference
+		targetNode.Status = "synced"
+		_ = w.vfs.db.SaveFileNode(targetNode)
+		fmt.Printf("✅ Загружен %s в Telegram (%d байт)\n", vPath, res.Size)
+	}(node, w.tempFilePath, w.virtualPath)
 
 	return nil
 }
+
+// LocalReadFile reads a local file directly when it is being cached/uploaded
+type LocalReadFile struct {
+	file        *os.File
+	virtualPath string
+}
+
+func (l *LocalReadFile) Close() error {
+	return l.file.Close()
+}
+
+func (l *LocalReadFile) Read(p []byte) (int, error) {
+	return l.file.Read(p)
+}
+
+func (l *LocalReadFile) Seek(offset int64, whence int) (int64, error) {
+	return l.file.Seek(offset, whence)
+}
+
+func (l *LocalReadFile) Stat() (os.FileInfo, error) {
+	st, err := l.file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	return &FileInfo{
+		node: &Node{
+			Name:    filepath.Base(l.virtualPath),
+			Path:    l.virtualPath,
+			IsDir:   false,
+			Size:    st.Size(),
+			ModTime: st.ModTime(),
+		},
+	}, nil
+}
+
+func (l *LocalReadFile) Write(p []byte) (int, error)             { return 0, fmt.Errorf("read-only") }
+func (l *LocalReadFile) Readdir(count int) ([]os.FileInfo, error) { return nil, fmt.Errorf("not a directory") }
 
 // ReadFile streams chunks on-demand from Telegram
 type ReadFile struct {
@@ -319,3 +435,16 @@ func (r *ReadFile) Seek(offset int64, whence int) (int64, error) {
 func (r *ReadFile) Write(p []byte) (int, error)             { return 0, fmt.Errorf("read-only") }
 func (r *ReadFile) Readdir(count int) ([]os.FileInfo, error) { return nil, fmt.Errorf("not a directory") }
 func (r *ReadFile) Close() error                           { return nil }
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
