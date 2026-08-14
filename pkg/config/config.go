@@ -88,7 +88,7 @@ func DefaultConfig() *Config {
 		ApiHash:      "",
 		StorageType:  "channel",
 		WebDAVHost:   "127.0.0.1",
-		WebDAVPort:   8080,
+		WebDAVPort:   8585,
 		DriveLetter:  drive,
 		AutoMount:    true,
 		MaxWorkers:   6,
