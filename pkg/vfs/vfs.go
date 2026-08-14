@@ -307,9 +307,18 @@ func (w *WriteFile) Close() error {
 			_ = os.Remove(tempPath)
 		}()
 
-		fmt.Printf("⬆️ Загрузка файла в Telegram: %s (%s)...\n", vPath, formatBytes(targetNode.Size))
+		var lastPct int = -1
+		progress := func(uploaded, total int64, speed float64) {
+			pct := float64(uploaded) / float64(total) * 100
+			currentPct := int(pct)
+			if currentPct != lastPct && (currentPct%2 == 0 || uploaded == total) {
+				lastPct = currentPct
+				targetNode.Status = fmt.Sprintf("uploading (%.0f%%)", pct)
+				_ = w.vfs.db.SaveFileNode(targetNode)
+			}
+		}
 
-		res, err := w.vfs.tgClient.UploadFile(context.Background(), tempPath, nil)
+		res, err := w.vfs.tgClient.UploadFile(context.Background(), tempPath, progress)
 		if err != nil {
 			fmt.Printf("❌ Ошибка загрузки %s в Telegram: %v\n", vPath, err)
 			targetNode.Status = "error"

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"tg-drive/pkg/config"
 	"tg-drive/pkg/vfs"
@@ -39,7 +40,7 @@ var lsCmd = &cobra.Command{
 
 		fmt.Printf("📂 Содержимое директории: %s\n", targetPath)
 		fmt.Println("─────────────────────────────────────────────────────────────────────────────")
-		fmt.Printf("%-35s %-12s %-12s %s\n", "Имя", "Размер", "Статус", "ID сообщения TG")
+		fmt.Printf("%-32s %-12s %-18s %s\n", "Имя", "Размер", "Статус", "ID сообщения TG")
 		fmt.Println("─────────────────────────────────────────────────────────────────────────────")
 
 		if len(children) == 0 {
@@ -50,12 +51,12 @@ var lsCmd = &cobra.Command{
 			name := node.Name
 			if node.IsDir {
 				name = "📁 " + name + "/"
-				fmt.Printf("%-35s %-12s %-12s %s\n", name, "<ПАПКА>", "—", "—")
+				fmt.Printf("%-32s %-12s %-18s %s\n", name, "<ПАПКА>", "—", "—")
 			} else {
 				name = "📄 " + name
 				statusStr := "✅ synced"
-				if node.Status == "uploading" {
-					statusStr = "⏳ uploading"
+				if strings.HasPrefix(node.Status, "uploading") {
+					statusStr = "⏳ " + node.Status
 				} else if node.Status == "error" {
 					statusStr = "❌ error"
 				}
@@ -65,7 +66,7 @@ var lsCmd = &cobra.Command{
 					msgIDStr = fmt.Sprintf("#%d", node.TGMessageID)
 				}
 
-				fmt.Printf("%-35s %-12s %-12s %s\n", truncateStr(name, 34), formatBytes(node.Size), statusStr, msgIDStr)
+				fmt.Printf("%-32s %-12s %-18s %s\n", truncateStr(name, 31), formatBytes(node.Size), statusStr, msgIDStr)
 			}
 		}
 		fmt.Println("─────────────────────────────────────────────────────────────────────────────")

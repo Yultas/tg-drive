@@ -240,10 +240,18 @@ func (s *Syncer) processUpload(task SyncTask) {
 	}
 	_ = s.db.SaveFileNode(node)
 
+	var lastPct int = -1
 	progress := func(uploaded, total int64, speed float64) {
 		pct := float64(uploaded) / float64(total) * 100
 		speedMB := speed / (1024 * 1024)
 		fmt.Printf("\r  ⏳ Прогресс: %.1f%% (%.2f МБ/с)", pct, speedMB)
+
+		currentPct := int(pct)
+		if currentPct != lastPct && (currentPct%2 == 0 || uploaded == total) {
+			lastPct = currentPct
+			node.Status = fmt.Sprintf("uploading (%.0f%%)", pct)
+			_ = s.db.SaveFileNode(node)
+		}
 	}
 
 	res, err := s.tgClient.UploadFile(s.ctx, task.LocalPath, progress)
