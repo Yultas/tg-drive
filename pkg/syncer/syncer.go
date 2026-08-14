@@ -100,6 +100,7 @@ func (s *Syncer) AddFolder(localPath, remotePath string) error {
 	}
 
 	fmt.Printf("📁 Папка подключена к автосинхронизации: %s -> %s\n", absLocal, remotePath)
+	_, _ = s.db.MkdirAll(remotePath)
 
 	// Initial scan of existing files
 	go s.initialScan(absLocal, remotePath)
@@ -118,9 +119,9 @@ func (s *Syncer) initialScan(localBase, remoteBase string) {
 		rel, _ := filepath.Rel(localBase, path)
 		remotePath := filepath.ToSlash(filepath.Join(remoteBase, rel))
 
-		// Check if file is already in DB with same size and mod time
+		// Check if file is already in DB with same size and confirmed synced
 		node, err := s.db.GetNodeByPath(remotePath)
-		if err == nil && node != nil && node.Size == info.Size() {
+		if err == nil && node != nil && node.Size == info.Size() && node.Status == "synced" {
 			return nil // Already synced
 		}
 

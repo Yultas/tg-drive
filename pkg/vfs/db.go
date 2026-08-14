@@ -165,7 +165,10 @@ func (d *DB) ListChildren(parentID int64) ([]*Node, error) {
 func (d *DB) MkdirAll(dirPath string) (*Node, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.mkdirAllLocked(dirPath)
+}
 
+func (d *DB) mkdirAllLocked(dirPath string) (*Node, error) {
 	dirPath = CleanPath(dirPath)
 	if dirPath == "/" {
 		var n Node
@@ -224,10 +227,15 @@ func (d *DB) SaveFileNode(n *Node) error {
 	n.Path = CleanPath(n.Path)
 	parentDir := path.Dir(n.Path)
 	
-	// Lookup parent ID
+	// Auto-create parent directory chain if needed
 	var parentID int64 = 1
 	if parentDir != "/" {
-		_ = d.db.QueryRow("SELECT id FROM nodes WHERE path = ?", parentDir).Scan(&parentID)
+		parentNode, err := d.mkdirAllLocked(parentDir)
+		if err == nil && parentNode != nil {
+			parentID = parentNode.ID
+		} else {
+			_ = d.db.QueryRow("SELECT id FROM nodes WHERE path = ?", parentDir).Scan(&parentID)
+		}
 	}
 	n.ParentID = parentID
 	n.Name = path.Base(n.Path)
