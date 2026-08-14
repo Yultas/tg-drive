@@ -567,6 +567,22 @@ func (c *Client) UploadFile(ctx context.Context, localPath string, progress Prog
 
 // DownloadChunk reads a specific byte slice (e.g. for streaming video/WebDAV range requests)
 func (c *Client) DownloadChunk(ctx context.Context, fileID, accessHash int64, fileRef []byte, offset int64, limit int) ([]byte, error) {
+	// MTProto requires offset and limit to be aligned to 4096 bytes (4 KB) and limit <= 1MB
+	const align = 4096
+	alignedOffset := (offset / align) * align
+	diff := int(offset - alignedOffset)
+
+	fetchLimit := limit + diff
+	if rem := fetchLimit % align; rem != 0 {
+		fetchLimit += align - rem
+	}
+	if fetchLimit > 1024*1024 {
+		fetchLimit = 1024 * 1024
+	}
+	if fetchLimit < align {
+		fetchLimit = align
+	}
+
 	location := &tg.InputDocumentFileLocation{
 		ID:            fileID,
 		AccessHash:    accessHash,
@@ -575,15 +591,27 @@ func (c *Client) DownloadChunk(ctx context.Context, fileID, accessHash int64, fi
 
 	res, err := c.rawAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
 		Location: location,
-		Offset:   offset,
-		Limit:    limit,
+		Offset:   alignedOffset,
+		Limit:    fetchLimit,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("telegram download error at offset %d: %w", offset, err)
 	}
 
-	if file, ok := res.(*tg.UploadFile); ok {
-		return file.Bytes, nil
+	var data []byte
+	switch f := res.(type) {
+	case *tg.UploadFile:
+		data = f.Bytes
+	default:
+		return nil, fmt.Errorf("unexpected file result type: %T", res)
 	}
-	return nil, fmt.Errorf("unexpected file result type")
+
+	if diff >= len(data) {
+		return nil, io.EOF
+	}
+	data = data[diff:]
+	if len(data) > limit {
+		data = data[:limit]
+	}
+	return data, nil
 }

@@ -369,12 +369,14 @@ func (l *LocalReadFile) Stat() (os.FileInfo, error) {
 func (l *LocalReadFile) Write(p []byte) (int, error)             { return 0, fmt.Errorf("read-only") }
 func (l *LocalReadFile) Readdir(count int) ([]os.FileInfo, error) { return nil, fmt.Errorf("not a directory") }
 
-// ReadFile streams chunks on-demand from Telegram
+// ReadFile streams chunks on-demand from Telegram with 512KB chunk buffering
 type ReadFile struct {
-	vfs    *VFS
-	node   *Node
-	ctx    context.Context
-	offset int64
+	vfs         *VFS
+	node        *Node
+	ctx         context.Context
+	offset      int64
+	chunkBuf    []byte
+	chunkOffset int64
 }
 
 func (r *ReadFile) Stat() (os.FileInfo, error) {
@@ -386,25 +388,39 @@ func (r *ReadFile) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	toRead := len(p)
-	if int64(toRead) > r.node.Size-r.offset {
-		toRead = int(r.node.Size - r.offset)
+	// 1. Check if current offset is within cached chunk
+	if r.chunkBuf != nil && r.offset >= r.chunkOffset && r.offset < r.chunkOffset+int64(len(r.chunkBuf)) {
+		bufStart := int(r.offset - r.chunkOffset)
+		n := copy(p, r.chunkBuf[bufStart:])
+		r.offset += int64(n)
+		if r.offset >= r.node.Size {
+			return n, io.EOF
+		}
+		return n, nil
 	}
 
-	// Read chunk from Telegram
+	// 2. Fetch new 512 KB chunk from Telegram
+	fetchSize := 512 * 1024
+	if int64(fetchSize) > r.node.Size-r.offset {
+		fetchSize = int(r.node.Size - r.offset)
+	}
+
 	chunk, err := r.vfs.tgClient.DownloadChunk(
 		r.ctx,
 		r.node.TGFileID,
 		r.node.TGAccessHash,
 		r.node.TGFileReference,
 		r.offset,
-		toRead,
+		fetchSize,
 	)
 	if err != nil {
 		return 0, err
 	}
 
-	n := copy(p, chunk)
+	r.chunkBuf = chunk
+	r.chunkOffset = r.offset
+
+	n := copy(p, r.chunkBuf)
 	r.offset += int64(n)
 	if r.offset >= r.node.Size {
 		return n, io.EOF
